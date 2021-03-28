@@ -984,26 +984,6 @@ func (p *parser) generateClosureForTypeScriptNamespaceOrEnum(
 		symbol = p.symbols[nameRef.InnerIndex]
 	}
 
-	// Make sure to only emit a variable once for a given namespace, since there
-	// can be multiple namespace blocks for the same namespace
-	if (symbol.Kind == js_ast.SymbolTSNamespace || symbol.Kind == js_ast.SymbolTSEnum) && !p.emittedNamespaceVars[nameRef] {
-		p.emittedNamespaceVars[nameRef] = true
-		if p.enclosingNamespaceArgRef == nil {
-			// Top-level namespace
-			stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SLocal{
-				Kind:     js_ast.LocalVar,
-				Decls:    []js_ast.Decl{{Binding: js_ast.Binding{Loc: nameLoc, Data: &js_ast.BIdentifier{Ref: nameRef}}}},
-				IsExport: isExport,
-			}})
-		} else {
-			// Nested namespace
-			stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SLocal{
-				Kind:  js_ast.LocalLet,
-				Decls: []js_ast.Decl{{Binding: js_ast.Binding{Loc: nameLoc, Data: &js_ast.BIdentifier{Ref: nameRef}}}},
-			}})
-		}
-	}
-
 	var argExpr js_ast.Expr
 	if isExport && p.enclosingNamespaceArgRef != nil {
 		// "name = enclosing.name || (enclosing.name = {})"
@@ -1017,14 +997,7 @@ func (p *parser) generateClosureForTypeScriptNamespaceOrEnum(
 					Name:    name,
 					NameLoc: nameLoc,
 				}},
-				Right: js_ast.Assign(
-					js_ast.Expr{Loc: nameLoc, Data: &js_ast.EDot{
-						Target:  js_ast.Expr{Loc: nameLoc, Data: &js_ast.EIdentifier{Ref: *p.enclosingNamespaceArgRef}},
-						Name:    name,
-						NameLoc: nameLoc,
-					}},
-					js_ast.Expr{Loc: nameLoc, Data: &js_ast.EObject{}},
-				),
+				Right: js_ast.Expr{Loc: nameLoc, Data: &js_ast.EObject{}},
 			}},
 		)
 		p.recordUsage(*p.enclosingNamespaceArgRef)
@@ -1033,12 +1006,9 @@ func (p *parser) generateClosureForTypeScriptNamespaceOrEnum(
 	} else {
 		// "name || (name = {})"
 		argExpr = js_ast.Expr{Loc: nameLoc, Data: &js_ast.EBinary{
-			Op:   js_ast.BinOpLogicalOr,
-			Left: js_ast.Expr{Loc: nameLoc, Data: &js_ast.EIdentifier{Ref: nameRef, CanBeRemovedIfUnused: canBeRemovedIfUnused}},
-			Right: js_ast.Assign(
-				js_ast.Expr{Loc: nameLoc, Data: &js_ast.EIdentifier{Ref: nameRef, CanBeRemovedIfUnused: canBeRemovedIfUnused}},
-				js_ast.Expr{Loc: nameLoc, Data: &js_ast.EObject{}},
-			),
+			Op:    js_ast.BinOpLogicalOr,
+			Left:  js_ast.Expr{Loc: nameLoc, Data: &js_ast.EIdentifier{Ref: nameRef, CanBeRemovedIfUnused: canBeRemovedIfUnused}},
+			Right: js_ast.Expr{Loc: nameLoc, Data: &js_ast.EObject{}},
 		}}
 		if !canBeRemovedIfUnused {
 			p.recordUsage(nameRef)
@@ -1046,15 +1016,40 @@ func (p *parser) generateClosureForTypeScriptNamespaceOrEnum(
 		}
 	}
 
-	// Call the closure with the name object
-	stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SExpr{Value: js_ast.Expr{Loc: stmtLoc, Data: &js_ast.ECall{
+	stmtsInsideClosure = append(stmtsInsideClosure,
+		js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SReturn{Value: &js_ast.Expr{Loc: stmtLoc, Data: &js_ast.EIdentifier{Ref: argRef}}}},
+	)
+	callExpr := js_ast.Expr{Loc: stmtLoc, Data: &js_ast.ECall{
 		Target: js_ast.Expr{Loc: stmtLoc, Data: &js_ast.EFunction{Fn: js_ast.Fn{
 			Args: []js_ast.Arg{{Binding: js_ast.Binding{Loc: nameLoc, Data: &js_ast.BIdentifier{Ref: argRef}}}},
 			Body: js_ast.FnBody{Loc: stmtLoc, Stmts: stmtsInsideClosure},
 		}}},
 		Args:                   []js_ast.Expr{argExpr},
 		CanBeUnwrappedIfUnused: canBeRemovedIfUnused,
-	}}, DoesNotAffectTreeShaking: canBeRemovedIfUnused}})
+	}}
+
+	// Make sure to only emit a variable once for a given namespace, since there
+	// can be multiple namespace blocks for the same namespace
+	if (symbol.Kind == js_ast.SymbolTSNamespace || symbol.Kind == js_ast.SymbolTSEnum) && !p.emittedNamespaceVars[nameRef] {
+		p.emittedNamespaceVars[nameRef] = true
+		if p.enclosingNamespaceArgRef == nil {
+			// Top-level namespace
+			stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SLocal{
+				Kind:     js_ast.LocalVar,
+				Decls:    []js_ast.Decl{{Binding: js_ast.Binding{Loc: nameLoc, Data: &js_ast.BIdentifier{Ref: nameRef}}, Value: &callExpr}},
+				IsExport: isExport,
+			}})
+		} else {
+			// Nested namespace
+			stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SLocal{
+				Kind:  js_ast.LocalLet,
+				Decls: []js_ast.Decl{{Binding: js_ast.Binding{Loc: nameLoc, Data: &js_ast.BIdentifier{Ref: nameRef}}, Value: &callExpr}},
+			}})
+		}
+	} else {
+		// Call the closure with the name object
+		stmts = append(stmts, js_ast.Stmt{Loc: stmtLoc, Data: &js_ast.SExpr{Value: callExpr, DoesNotAffectTreeShaking: canBeRemovedIfUnused}})
+	}
 
 	return stmts
 }

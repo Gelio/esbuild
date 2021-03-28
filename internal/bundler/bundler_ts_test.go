@@ -291,9 +291,11 @@ func TestTSInlinableLocalConstEnumInsideNamespace(t *testing.T) {
 		},
 		entryPaths: []string{"/entry.ts"},
 		options: config.Options{
-			Mode:          config.ModeBundle,
-			AbsOutputFile: "/out.js",
-			MangleSyntax:  true,
+			Mode:              config.ModeBundle,
+			AbsOutputFile:     "/out.js",
+			MangleSyntax:      true,
+			MinifyIdentifiers: true,
+			RemoveWhitespace:  true,
 		},
 	})
 }
